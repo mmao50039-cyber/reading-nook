@@ -193,10 +193,34 @@ def split_chapters(text: str):
     return _size_split(text)
 
 
+# 常见非文本格式的文件头。改后缀不等于转格式——PDF 改名成 .txt 传上来，
+# gb18030 几乎能把任何字节都"解码"成乱码汉字，于是从前会静悄悄拆出一本乱码书。
+MAGIC = [
+    (b"%PDF", "PDF"), (b"PK\x03\x04", "Word/EPUB/zip"),
+    (b"\xd0\xcf\x11\xe0", "老版 Word/Excel"), (b"{\\rtf", "RTF"),
+    (b"\x89PNG", "PNG 图片"), (b"\xff\xd8\xff", "JPEG 图片"),
+    (b"GIF8", "GIF 图片"), (b"\x1f\x8b", "gzip 压缩包"),
+]
+
+
+def _reject_if_binary(raw: bytes, text: str):
+    for sig, what in MAGIC:
+        if raw.startswith(sig):
+            raise ValueError(f"这是{what}，不是纯文本。改后缀变不成 txt，得先转格式。")
+    # 兜底：正常中文里几乎不会出现控制字符（制表/换行除外）
+    sample = text[:4000]
+    if not sample:
+        return
+    bad = sum(1 for c in sample if (c < " " and c not in "\t\n\r") or c == "\ufffd")
+    if bad > len(sample) * 0.02:
+        raise ValueError("这不像纯文本文件（里面有大量乱码）。先确认它本身就是 txt。")
+
+
 def save_book(filename: str, raw: bytes):
     title = re.sub(r"\.(txt|text)$", "", filename, flags=re.I).strip() or "未命名"
     slug = re.sub(r"[^\w一-鿿-]+", "-", title).strip("-") or f"book-{int(time.time())}"
     text = decode_text(raw)
+    _reject_if_binary(raw, text)
     chapters = split_chapters(text)
     if not chapters:
         raise ValueError("empty book")
@@ -676,8 +700,15 @@ border-radius:16px;color:var(--sub);width:100%;font-size:15px}
 </style></head><body><div class="wrap">
 <h1>📖 共读小屋</h1><div class="sub">__SUB__</div>
 <div id="books"></div>
-<input type="file" id="f" accept=".txt" hidden>
-<button class="up" onclick="document.getElementById('f').click()">＋ 传一本新书（txt）</button>
+<input type="file" id="f" hidden>
+<button class="up" onclick="document.getElementById('f').click()">＋ 传一本新书（txt 文件）</button>
+<button class="up" style="margin-top:8px" onclick="var b=document.getElementById('paste');b.style.display=b.style.display==='none'?'block':'none'">✍️ 直接粘贴文字（不用文件）</button>
+<div id="paste" style="display:none;margin-top:10px">
+<input id="pt" placeholder="书名" style="width:100%;padding:12px;border:1px solid var(--pink-line);border-radius:12px;font-size:15px;background:none;color:var(--ink);box-sizing:border-box">
+<textarea id="pb" rows="10" placeholder="把正文粘在这里。章节标题各占一行，比如「第一章 逃跑」。可以分几次粘，粘完再存。" style="width:100%;margin-top:8px;padding:12px;border:1px solid var(--pink-line);border-radius:12px;font-size:14px;line-height:1.7;background:none;color:var(--ink);box-sizing:border-box"></textarea>
+<div style="text-align:right;font-size:12px;color:var(--sub);margin-top:4px"><span id="pc">0</span> 字</div>
+<button class="up" style="padding:14px;margin-top:4px" onclick="savePaste()">存进书架</button>
+</div>
 <div id="st"></div>
 <div style="display:flex;gap:10px;margin-top:16px">
 <button style="flex:1;padding:12px;background:var(--blue);border:1px solid var(--blue-line);color:var(--blue-ink);font-size:14px" onclick="location.href='/ds'">DeepSeek工作台🖥️</button>
@@ -701,6 +732,25 @@ async function load(){
   </div>${cont}</div>`;}).join('');
 }
 function go(s,c,m){location.href='/read/'+encodeURIComponent(s)+'/'+c+'?mode='+m;}
+document.getElementById('pb').addEventListener('input',e=>{
+ document.getElementById('pc').textContent=e.target.value.length;});
+async function savePaste(){
+ const t=document.getElementById('pt').value.trim();
+ const b=document.getElementById('pb').value;
+ const st=document.getElementById('st');
+ if(!t){st.textContent='✗ 先给它起个书名';return;}
+ if(!b.trim()){st.textContent='✗ 正文是空的';return;}
+ st.textContent='存进去中…';
+ const r=await fetch('/api/upload',{method:'POST',
+  headers:{'X-Filename':encodeURIComponent(t+'.txt')},body:new Blob([b],{type:'text/plain'})});
+ const j=await r.json();
+ if(j.ok){st.textContent='✓ 已入库：'+j.title+'（'+j.count+' 章）';
+  document.getElementById('pb').value='';document.getElementById('pt').value='';
+  document.getElementById('pc').textContent='0';
+  document.getElementById('paste').style.display='none';}
+ else st.textContent='✗ '+j.error;
+ load();
+}
 document.getElementById('f').addEventListener('change',async e=>{
  const file=e.target.files[0];if(!file)return;
  const st=document.getElementById('st');st.textContent='上传中…';
