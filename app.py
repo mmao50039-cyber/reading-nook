@@ -49,6 +49,35 @@ GARDENER_LOG = CFG.get("gardener_log", "")
 os.makedirs(BOOKS_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
+
+def storage_report():
+    """书到底落在哪儿。
+
+    8.21 出过一次事：书传进去、隔天全没了。原因是 DATA_DIR 没设，
+    它就回退到 ROOT（也就是 /app）——托管平台上那个目录每次重新部署
+    都是全新的，等于把书写进了随时会被抹掉的地方，而且不报任何错。
+
+    静悄悄丢数据是最难查的一类故障，所以让它每次启动自己说一遍：
+    书在哪、那儿是不是挂载的卷、现在有几本。设备号跟 / 不同就说明
+    DATA_DIR 落在独立的文件系统上，也就是真的挂上卷了。
+    """
+    try:
+        on_volume = os.stat(DATA_DIR).st_dev != os.stat("/").st_dev
+    except OSError:
+        on_volume = False
+    try:
+        books = len([d for d in os.listdir(BOOKS_DIR)
+                     if os.path.isdir(os.path.join(BOOKS_DIR, d))])
+    except OSError:
+        books = 0
+    return {
+        "data_dir": DATA_DIR,
+        "books_dir": BOOKS_DIR,
+        "data_dir_env": os.environ.get("DATA_DIR") or "(没设，回退到程序所在目录)",
+        "on_volume": on_volume,
+        "books": books,
+    }
+
 # ---------------- 数据层 ----------------
 
 def load_json(path, default):
@@ -1255,6 +1284,11 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(u.path)
         qs = dict(p.split("=", 1) for p in u.query.split("&") if "=" in p)
 
+        # 自检口故意放在密码门外面：书丢了的时候，登录页后面的东西正好看不到，
+        # 而这正是最需要知道"书到底存在哪儿"的时刻。只报路径和本数，不报书名。
+        if path == "/api/health":
+            return self.send_json(storage_report())
+
         if not self.authed():
             if path.startswith("/api/"):
                 return self.send_json({"error": "unauthorized"}, 401)
@@ -1466,6 +1500,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    _r = storage_report()
+    print(f"书存在 {_r['books_dir']}（DATA_DIR 环境变量={_r['data_dir_env']}）")
+    print(f"那儿{'是挂载的卷，重新部署不会丢' if _r['on_volume'] else '不是卷——⚠️ 重新部署会把书全抹掉，去把 DATA_DIR 设成卷的挂载路径'}"
+          f"，现在有 {_r['books']} 本书")
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"共读小屋 running on :{PORT}")
     server.serve_forever()
