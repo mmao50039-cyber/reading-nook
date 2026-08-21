@@ -767,7 +767,7 @@ async function delBook(e,slug,title){
  if(!confirm('删掉《'+title+'》？\\n\\n它的章节和你在上面写的批注会一起没掉，删了找不回来。'))return;
  const st=document.getElementById('st');st.textContent='删除中…';
  const r=await fetch('/api/delete',{method:'POST',
-  headers:{'Content-Type':'application/json'},body:JSON.stringify({slug:slug})});
+  headers:{'Content-Type':'application/json'},body:JSON.stringify({slug:slug,force:true})});
  const j=await r.json();
  st.textContent=j.ok?('✓ 已删：'+j.title):('✗ '+j.error);
  load();
@@ -1416,6 +1416,19 @@ class Handler(BaseHTTPRequestHandler):
             if not os.path.isdir(bdir):
                 return self.send_json({"ok": False, "error": "没这本书"})
             title = load_json(os.path.join(bdir, "meta.json"), {}).get("title", slug)
+            # 批注是她写的，不是书的一部分。言能删自己取错的书，但她在上面
+            # 留过字的那本得她自己点头——网页上的删除按钮带 force（确认框里
+            # 已经把代价说清楚了），yan-read 不带。
+            adir = os.path.join(bdir, "annotations")
+            marks = 0
+            if os.path.isdir(adir):
+                for fn in os.listdir(adir):
+                    got = load_json(os.path.join(adir, fn), [])
+                    marks += len(got) if isinstance(got, list) else 0
+            if marks and not d.get("force"):
+                return self.send_json({"ok": False, "annotated": marks,
+                                       "error": f"《{title}》上有 {marks} 条批注，是她写的。"
+                                                "要删得她自己在书架上点，不能从这儿删。"})
             shutil.rmtree(bdir)
             prog = load_json(PROGRESS_FILE, {})
             if prog.pop(slug, None) is not None:
