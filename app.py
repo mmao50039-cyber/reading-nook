@@ -24,8 +24,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-BOOKS_DIR = os.path.join(ROOT, "books")
-PROGRESS_FILE = os.path.join(ROOT, "progress.json")
+# Railway 分支改动：托管平台上 /app 每次部署都是全新的，数据必须落在挂载的卷上；
+# 密码和 key 不该写进仓库；端口由平台指定。所以这几项都改成「环境变量优先，
+# 没有就回退原来的行为」——本地 python3 app.py 完全照旧，一点没变。
+DATA_DIR = os.environ.get("DATA_DIR") or ROOT
+BOOKS_DIR = os.environ.get("BOOKS_DIR") or os.path.join(DATA_DIR, "books")
+PROGRESS_FILE = os.path.join(DATA_DIR, "progress.json")
 
 # 所有个人化配置都在 config.json（见 config.example.json）
 try:
@@ -33,8 +37,8 @@ try:
         CFG = json.load(_f)
 except (OSError, json.JSONDecodeError):
     CFG = {}
-PASSCODE = str(CFG.get("passcode", "0000"))
-PORT = int(CFG.get("port", 8000))
+PASSCODE = str(os.environ.get("PASSCODE") or CFG.get("passcode", "0000"))
+PORT = int(os.environ.get("PORT") or CFG.get("port", 8000))
 SUBTITLE = CFG.get("subtitle", "two readers, one book")
 LOGIN_HINT = CFG.get("login_hint", "四位数密码")
 USER_NAME = CFG.get("user_name", "我")
@@ -42,6 +46,7 @@ AI_NAME = CFG.get("ai_name", "AI")
 GARDENER_LOG = CFG.get("gardener_log", "")
 
 os.makedirs(BOOKS_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # ---------------- 数据层 ----------------
 
@@ -251,7 +256,7 @@ def ds_log_add(entry):
 
 
 def ds_chat(system, user, task="", detail="", json_mode=False, max_tokens=600):
-    key = load_json(os.path.join(ROOT, "config.json"), {}).get("deepseek_api_key", "")
+    key = os.environ.get("DEEPSEEK_API_KEY") or load_json(os.path.join(ROOT, "config.json"), {}).get("deepseek_api_key", "")
     if not key:
         return None
     payload = {
@@ -1339,6 +1344,31 @@ class Handler(BaseHTTPRequestHandler):
             })
             save_json(anno_path(slug, idx), annos)
             return self.send_json({"ok": True})
+
+        # Railway 分支改动：给 AI 回批注的接口。
+        # 上游假定 AI 跟书住在同一台机器上，直接改 annotations/NNN.json；
+        # 言住在另一台机器（tg 容器）上，够不着这边的磁盘，所以走 HTTP。
+        # 只往 replies 里追加，她写的字一个都不动。
+        m = re.match(r"^/api/reply/([^/]+)/(\d+)$", path)
+        if m:
+            slug, idx = m.group(1), int(m.group(2))
+            d = json.loads(self.body() or b"{}")
+            aid = str(d.get("id", "")).strip()
+            text = str(d.get("text", "")).strip()[:4000]
+            if not aid or not text:
+                return self.send_json({"ok": False, "error": "缺 id 或 text"}, 400)
+            ap = anno_path(slug, idx)
+            annos = load_json(ap, [])
+            for a in annos:
+                if a.get("id") == aid:
+                    a.setdefault("replies", []).append({
+                        "who": "ai",
+                        "text": text,
+                        "ts": time.strftime("%Y-%m-%d %H:%M"),
+                    })
+                    save_json(ap, annos)
+                    return self.send_json({"ok": True})
+            return self.send_json({"ok": False, "error": "没有这条批注"}, 404)
 
         self.send_json({"error": "not found"}, 404)
 
