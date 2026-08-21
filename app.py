@@ -764,7 +764,7 @@ async function load(){
 function go(s,c,m){location.href='/read/'+encodeURIComponent(s)+'/'+c+'?mode='+m;}
 async function delBook(e,slug,title){
  e.stopPropagation();
- if(!confirm('删掉《'+title+'》？\n\n它的章节和你在上面写的批注会一起没掉，删了找不回来。'))return;
+ if(!confirm('删掉《'+title+'》？\\n\\n它的章节和你在上面写的批注会一起没掉，删了找不回来。'))return;
  const st=document.getElementById('st');st.textContent='删除中…';
  const r=await fetch('/api/delete',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify({slug:slug})});
