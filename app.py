@@ -16,6 +16,7 @@
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import urllib.request
@@ -724,7 +725,7 @@ async function load(){
  el.innerHTML=books.map(b=>{
   const p=prog[b.slug];
   const cont=p?`<div class="cont" onclick="go('${b.slug}',${p.ch},${p.mode})">▸ 继续读：${b.chapters[p.ch]}（${p.mode===2?'批注模式':'阅读模式'}）</div>`:'';
-  return `<div class="card"><div class="bt">${b.title}</div>
+  return `<div class="card"><div class="bt">${b.title}<span onclick="delBook(event,'${b.slug}','${b.title.replace(/'/g,"\\'")}')" style="float:right;cursor:pointer;color:var(--sub);font-size:13px;padding:0 4px">删</span></div>
   <div class="bm">${b.chapters.length} 章 · ${b.created}</div>
   <div class="modes">
    <button class="m1" onclick="go('${b.slug}',${p?p.ch:0},1)">功能一 · 纯阅读</button>
@@ -732,6 +733,16 @@ async function load(){
   </div>${cont}</div>`;}).join('');
 }
 function go(s,c,m){location.href='/read/'+encodeURIComponent(s)+'/'+c+'?mode='+m;}
+async function delBook(e,slug,title){
+ e.stopPropagation();
+ if(!confirm('删掉《'+title+'》？\n\n它的章节和你在上面写的批注会一起没掉，删了找不回来。'))return;
+ const st=document.getElementById('st');st.textContent='删除中…';
+ const r=await fetch('/api/delete',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify({slug:slug})});
+ const j=await r.json();
+ st.textContent=j.ok?('✓ 已删：'+j.title):('✗ '+j.error);
+ load();
+}
 document.getElementById('pb').addEventListener('input',e=>{
  document.getElementById('pc').textContent=e.target.value.length;});
 async function savePaste(){
@@ -1360,6 +1371,22 @@ class Handler(BaseHTTPRequestHandler):
             gen_notes_async(slug)
             return self.send_json({"ok": True, "slug": slug,
                                    "title": meta["title"], "count": len(meta["chapters"])})
+
+        if path == "/api/delete":
+            d = json.loads(self.body() or b"{}")
+            slug = str(d.get("slug", ""))
+            # 只认书架上真实存在的目录名，从根上堵掉 ../ 这类路径穿越
+            if not slug or slug not in set(os.listdir(BOOKS_DIR) if os.path.isdir(BOOKS_DIR) else []):
+                return self.send_json({"ok": False, "error": "没这本书"})
+            bdir = os.path.join(BOOKS_DIR, slug)
+            if not os.path.isdir(bdir):
+                return self.send_json({"ok": False, "error": "没这本书"})
+            title = load_json(os.path.join(bdir, "meta.json"), {}).get("title", slug)
+            shutil.rmtree(bdir)
+            prog = load_json(PROGRESS_FILE, {})
+            if prog.pop(slug, None) is not None:
+                save_json(PROGRESS_FILE, prog)
+            return self.send_json({"ok": True, "title": title})
 
         if path == "/api/bg":
             raw = self.body()
